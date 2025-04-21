@@ -3,9 +3,9 @@ import java.net.*;
 import java.util.*;
 
 public class ChatServer {
-
 	protected int serverPort = 1234;
-	protected List<Socket> clients = new ArrayList<Socket>(); // list of clients
+	protected List<Socket> clients = new ArrayList<>(); // list of clients
+	protected Map<String, Integer> username2socketPort = new HashMap<>();
 
 	public static void main(String[] args) throws Exception {
 		new ChatServer();
@@ -65,10 +65,34 @@ public class ChatServer {
 		}
 	}
 
+	public void sendToSpecificClient(String message, String sender, String recipient) throws Exception {
+		Integer port = getPortByUsername(recipient);
+		if (port != null) {
+			for (Socket socket : clients) {
+				if (socket.getPort() == port) {
+					try {
+						DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+						out.writeUTF(message);
+					} catch (Exception e) {
+						System.err.println("[system] could not send message to a client");
+					}
+				}
+			}
+		}
+	}
+
 	public void removeClient(Socket socket) {
 		synchronized(this) {
 			clients.remove(socket);
 		}
+	}
+
+	public synchronized void registerUsername(String username, int port) {
+		username2socketPort.putIfAbsent(username, port);
+	}
+
+	public synchronized Integer getPortByUsername(String username) {
+		return username2socketPort.get(username);
 	}
 }
 
@@ -95,25 +119,39 @@ class ChatServerConnector extends Thread {
 		}
 
 		while (true) { // infinite loop in which this thread waits for incoming messages and processes them
-			String msg_received;
 			try {
-				msg_received = in.readUTF(); // read the message from the client
-			} catch (Exception e) {
-				System.err.println("[system] there was a problem while reading message client on port " + this.socket.getPort() + ", removing client");
-				e.printStackTrace(System.err);
-				this.server.removeClient(this.socket);
-				return;
-			}
+				String msg_received = in.readUTF();
 
-			if (msg_received.length() == 0) // invalid message
-				continue;
+				System.out.println("[system RKchat] " + msg_received); // print the incoming message in the console
 
-			System.out.println("[RKchat] [" + this.socket.getPort() + "] : " + msg_received); // print the incoming message in the console
+				int type = Integer.parseInt(msg_received.substring(0, 1));
+				String date = msg_received.substring(1, 9);
+				String time = msg_received.substring(9, 15);
+				String sender = msg_received.substring(15, 32).trim();
+				String recipient = msg_received.substring(32, 49).trim();
+				String payload = msg_received.substring(49);
 
-			String msg_send = "someone said: " + msg_received.toUpperCase(); // TODO
-
-			try {
-				this.server.sendToAllClients(msg_send); // send message to all clients
+				if (type == 1) {
+					if (server.getPortByUsername(sender) == null) {
+						server.registerUsername(sender, socket.getPort());
+						String response = "1" + date + time + String.format("%-17s", "system") + String.format("%-17s", sender) + "You are now logged in as @" + sender;
+						server.sendToSpecificClient(response, "server", sender);
+					} else {
+						String response = "4" + date + time + String.format("%-17s", "system") + String.format("%-17s", sender) + "Username already exists!";
+						server.sendToSpecificClient(response, "server", sender);
+					}
+				} else if (type == 2) {
+					String message = "2" + date + time + String.format("%-17s", sender) + String.format("%-17s", "") + payload;
+					server.sendToAllClients(message);
+				} else if (type == 3) {
+					if (server.getPortByUsername(recipient) != null) {
+						String message = "3" + date + time + String.format("%-17s", sender) + String.format("%-17s", recipient) + payload;
+						server.sendToSpecificClient(message, sender, recipient);
+					} else {
+						String errorMsg = "4" + date + time + String.format("%-17s", "system") + String.format("%-17s", sender) + "User @" + recipient + " does not exist!";
+						server.sendToSpecificClient(errorMsg, "server", sender);
+					}
+				}
 			} catch (Exception e) {
 				System.err.println("[system] there was a problem while sending the message to all clients");
 				e.printStackTrace(System.err);
