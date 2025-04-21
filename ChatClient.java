@@ -6,6 +6,7 @@ import java.time.format.DateTimeFormatter;
 public class ChatClient extends Thread
 {
 	protected int serverPort = 1234;
+	public static boolean hasValidUsername = false;
 
 	public static void main(String[] args) throws Exception {
 		new ChatClient();
@@ -16,7 +17,6 @@ public class ChatClient extends Thread
 		DataInputStream in = null;
 		DataOutputStream out = null;
 		String username = "";
-		boolean hasValidUsername = false;
 
 		// connect to the chat server
 		try {
@@ -49,7 +49,6 @@ public class ChatClient extends Thread
 
 			if (!hasValidUsername) {
 				if (isValidUsername(userInput)) {
-					hasValidUsername = true;
 					username = userInput.trim();
 					String msg = "1" + date + time + String.format("%-17s", username) + recipient + "LOGIN";
 					sendMessage(msg, out);
@@ -123,6 +122,7 @@ class ChatClientMessageReceiver extends Thread {
 
 				String base = String.format("[%s] [%s:%s] ", sender, timeHour, timeMinutes);
 				if(type == 1) {
+					ChatClient.hasValidUsername = true;
 					String response = base + payload;
 					System.out.println(response);
 				} else if (type == 2) {
@@ -132,6 +132,12 @@ class ChatClientMessageReceiver extends Thread {
 					String response = "[direct message] " + base + payload;
 					System.out.println(response);
 				} else if (type == 4) {
+					// niso vsi type4 errorji enaki
+					// user not found, username already exists
+					if(payload.contains("USER_EXISTS")) {
+						ChatClient.hasValidUsername = false;
+					}
+
 					String response = base + payload;
 					System.out.println(response);
 				}

@@ -134,11 +134,12 @@ class ChatServerConnector extends Thread {
 				if (type == 1) {
 					if (server.getPortByUsername(sender) == null) {
 						server.registerUsername(sender, socket.getPort());
-						String response = "1" + date + time + String.format("%-17s", "system") + String.format("%-17s", sender) + "You are now logged in as @" + sender;
+						String response = "1" + date + time + String.format("%-17s", "system") + String.format("%-17s", sender) + "You are now logged in as @ " + sender;
 						server.sendToSpecificClient(response, "server", sender);
 					} else {
-						String response = "4" + date + time + String.format("%-17s", "system") + String.format("%-17s", sender) + "Username already exists!";
-						server.sendToSpecificClient(response, "server", sender);
+						String response = "4" + date + time + String.format("%-17s", "system") + String.format("%-17s", sender) + "Username already exists! [USER_EXISTS]";
+						DataOutputStream out = new DataOutputStream(socket.getOutputStream()); // ✅ Send directly
+						out.writeUTF(response);
 					}
 				} else if (type == 2) {
 					String message = "2" + date + time + String.format("%-17s", sender) + String.format("%-17s", "") + payload;
@@ -148,14 +149,20 @@ class ChatServerConnector extends Thread {
 						String message = "3" + date + time + String.format("%-17s", sender) + String.format("%-17s", recipient) + payload;
 						server.sendToSpecificClient(message, sender, recipient);
 					} else {
-						String errorMsg = "4" + date + time + String.format("%-17s", "system") + String.format("%-17s", sender) + "User @" + recipient + " does not exist!";
+						String errorMsg = "4" + date + time + String.format("%-17s", "system") + String.format("%-17s", sender) + "User @" + recipient + " does not exist! [USER_NOT_FOUND]";
 						server.sendToSpecificClient(errorMsg, "server", sender);
 					}
 				}
 			} catch (Exception e) {
 				System.err.println("[system] there was a problem while sending the message to all clients");
 				e.printStackTrace(System.err);
-				continue;
+				try {
+					socket.close();
+				} catch (IOException ex) {
+					ex.printStackTrace(System.err);
+				}
+				this.server.removeClient(socket); // ✅ remove the socket from the server's client list
+				break;
 			}
 		}
 	}
