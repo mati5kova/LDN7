@@ -170,7 +170,7 @@ class ChatServerConnector extends Thread {
 				} catch (IOException ex) {
 					ex.printStackTrace(System.err);
 				}
-				
+
 				this.server.removeClient(socket);
 				// da se iz mapa odstrani username in port
 				// drugace ce se npr loginamo notri, ugasnemo chatclient in se spet loginamo z istim imenom nas ne spusti notri ker ni entry izbrisan

@@ -33,7 +33,7 @@ public class ChatClient extends Thread
 			System.exit(1);
 		}
 
-		System.out.println("[system] Enter your username (1-17 characters long): ");
+		System.out.println("[system] Enter your username (1-17 characters long, no spaces): ");
 
 		// read from STDIN and send messages to the chat server
 		BufferedReader std_in = new BufferedReader(new InputStreamReader(System.in));
