@@ -94,6 +94,15 @@ public class ChatServer {
 	public synchronized Integer getPortByUsername(String username) {
 		return username2socketPort.get(username);
 	}
+
+	public synchronized  String getUsernameByPort(Integer port) {
+		for(Map.Entry<String, Integer> entry : username2socketPort.entrySet()) {
+			if(entry.getValue().equals(port)) {
+				return entry.getKey();
+			}
+		}
+		return "";
+	}
 }
 
 class ChatServerConnector extends Thread {
@@ -122,7 +131,7 @@ class ChatServerConnector extends Thread {
 			try {
 				String msg_received = in.readUTF();
 
-				System.out.println("[system RKchat] " + msg_received); // print the incoming message in the console
+				System.out.println("[system RKchat] " + msg_received);
 
 				int type = Integer.parseInt(msg_received.substring(0, 1));
 				String date = msg_received.substring(1, 9);
@@ -138,7 +147,7 @@ class ChatServerConnector extends Thread {
 						server.sendToSpecificClient(response, "server", sender);
 					} else {
 						String response = "4" + date + time + String.format("%-17s", "system") + String.format("%-17s", sender) + "Username already exists! [USER_EXISTS]";
-						DataOutputStream out = new DataOutputStream(socket.getOutputStream()); // ✅ Send directly
+						DataOutputStream out = new DataOutputStream(socket.getOutputStream());
 						out.writeUTF(response);
 					}
 				} else if (type == 2) {
@@ -161,7 +170,11 @@ class ChatServerConnector extends Thread {
 				} catch (IOException ex) {
 					ex.printStackTrace(System.err);
 				}
-				this.server.removeClient(socket); // ✅ remove the socket from the server's client list
+				
+				this.server.removeClient(socket);
+				// da se iz mapa odstrani username in port
+				// drugace ce se npr loginamo notri, ugasnemo chatclient in se spet loginamo z istim imenom nas ne spusti notri ker ni entry izbrisan
+				this.server.username2socketPort.remove(this.server.getUsernameByPort(socket.getPort()));
 				break;
 			}
 		}
