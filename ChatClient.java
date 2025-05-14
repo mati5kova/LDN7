@@ -1,107 +1,90 @@
+import javax.net.ssl.*;
 import java.io.*;
-import java.net.*;
+import java.security.KeyStore;
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
-public class ChatClient extends Thread
-{
+public class ChatClient {
 	protected int serverPort = 1234;
-	public static boolean hasValidUsername = false;
 
 	public static void main(String[] args) throws Exception {
-		new ChatClient();
+		new ChatClient().start();
 	}
 
-	public ChatClient() throws Exception {
-		Socket socket = null;
-		DataInputStream in = null;
-		DataOutputStream out = null;
-		String username = "";
+	public void start() throws Exception {
+		// nalozi keystore in truststore
+		String ksPath = System.getProperty("javax.net.ssl.keyStore");
+		String ksPass = System.getProperty("javax.net.ssl.keyStorePassword");
+		String tsPath = System.getProperty("javax.net.ssl.trustStore");
+		String tsPass = System.getProperty("javax.net.ssl.trustStorePassword");
 
-		// connect to the chat server
-		try {
-			System.out.println("[system] connecting to chat server ...");
-			socket = new Socket("localhost", serverPort); // create socket connection
-			in = new DataInputStream(socket.getInputStream()); // create input stream for listening for incoming messages
-			out = new DataOutputStream(socket.getOutputStream()); // create output stream for sending messages
-			System.out.println("[system] connected");
-
-			ChatClientMessageReceiver message_receiver = new ChatClientMessageReceiver(in); // create a separate thread for listening to messages from the chat server
-			message_receiver.start(); // run the new thread
-		} catch (Exception e) {
-			e.printStackTrace(System.err);
-			System.exit(1);
+		KeyStore clientKeyStore = KeyStore.getInstance("JKS");
+		try (FileInputStream fis = new FileInputStream(ksPath)) {
+			clientKeyStore.load(fis, ksPass.toCharArray());
 		}
+		KeyManagerFactory kmf = KeyManagerFactory.getInstance("SunX509");
+		kmf.init(clientKeyStore, ksPass.toCharArray());
 
-		System.out.println("[system] Enter your username (1-17 characters long, no spaces): ");
+		KeyStore trustStore = KeyStore.getInstance("JKS");
+		try (FileInputStream fis = new FileInputStream(tsPath)) {
+			trustStore.load(fis, tsPass.toCharArray());
+		}
+		TrustManagerFactory tmf = TrustManagerFactory.getInstance("SunX509");
+		tmf.init(trustStore);
 
-		// read from STDIN and send messages to the chat server
-		BufferedReader std_in = new BufferedReader(new InputStreamReader(System.in));
+
+		SSLContext sslContext = SSLContext.getInstance("TLSv1.2");
+		sslContext.init(kmf.getKeyManagers(), tmf.getTrustManagers(), new SecureRandom());
+
+		SSLSocketFactory factory = sslContext.getSocketFactory();
+		SSLSocket socket = (SSLSocket) factory.createSocket("localhost", serverPort);
+		socket.setEnabledProtocols(new String[]{"TLSv1.2"});
+		socket.setEnabledCipherSuites(new String[]{"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"});
+		socket.startHandshake();
+
+		System.out.println("[system] connected via TLS");
+
+		DataInputStream in = new DataInputStream(socket.getInputStream());
+		DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+
+		// create a separate thread for listening to messages
+		ChatClientMessageReceiver receiver = new ChatClientMessageReceiver(in);
+		receiver.start();
+
+		BufferedReader stdIn = new BufferedReader(new InputStreamReader(System.in));
 		String userInput;
+		while ((userInput = stdIn.readLine()) != null) {
+			LocalDateTime now = LocalDateTime.now();
+			String date = now.format(DateTimeFormatter.ofPattern("ddMMyyyy"));
+			String time = now.format(DateTimeFormatter.ofPattern("HHmmss"));
 
-		while ((userInput = std_in.readLine()) != null) {
-			String[] now = getCurrentFormattedDateTime();
-			String date = now[0];
-			String time = now[1];
-			String recipient = String.format("%-17s", "");
 			int type = 2;
+			String recipientField = String.format("%-17s", "");
 			String payload = userInput;
-
-			if (!hasValidUsername) {
-				if (isValidUsername(userInput)) {
-					username = userInput.trim();
-					String msg = "1" + date + time + String.format("%-17s", username) + recipient + "LOGIN";
-					sendMessage(msg, out);
-				} else {
-					System.out.println("[system] Invalid username");
+			if (userInput.startsWith("@")) {
+				type = 3;
+				String[] parts = userInput.split(" ", 2);
+				if (parts.length >= 2) {
+					recipientField = String.format("%-17s", parts[0].substring(1));
+					payload = parts[1];
 				}
-			} else {
-				if (userInput.startsWith("@")) {
-					type = 3;
-					String[] parts = userInput.split(" ", 2);
-					if (parts.length >= 2) {
-						recipient = String.format("%-17s", parts[0].substring(1));
-						payload = parts[1];
-					}
-				}
-				String msg = type + date + time + String.format("%-17s", username) + recipient + payload;
-				sendMessage(msg, out);
 			}
+
+			String msg = type + date + time + String.format("%-17s", "") + recipientField + payload;
+			out.writeUTF(msg);
+			out.flush();
 		}
 
-		// cleanup
 		out.close();
 		in.close();
-		std_in.close();
+		stdIn.close();
 		socket.close();
-	}
-
-	private boolean isValidUsername(String input) {
-		return input.length() >= 1 && input.length() <= 17 && !input.contains(" ");
-	}
-
-
-	private void sendMessage(String message, DataOutputStream out) {
-		try {
-			out.writeUTF(message); // send the message to the chat server
-			out.flush(); // ensure the message has been sent
-		} catch (IOException e) {
-			System.err.println("[system] could not send message");
-			e.printStackTrace(System.err);
-		}
-	}
-
-	private String[] getCurrentFormattedDateTime() {
-		LocalDateTime now = LocalDateTime.now();
-		String date = now.format(DateTimeFormatter.ofPattern("ddMMyyyy"));
-		String time = now.format(DateTimeFormatter.ofPattern("HHmmss"));
-		return new String[] { date, time };
 	}
 }
 
-// wait for messages from the chat server and print the out
 class ChatClientMessageReceiver extends Thread {
-	private DataInputStream in;
+	private final DataInputStream in;
 
 	public ChatClientMessageReceiver(DataInputStream in) {
 		this.in = in;
@@ -110,38 +93,20 @@ class ChatClientMessageReceiver extends Thread {
 	public void run() {
 		try {
 			String message;
-			while ((message = this.in.readUTF()) != null) { // read new message
-
+			while ((message = in.readUTF()) != null) {
 				int type = Integer.parseInt(message.substring(0, 1));
-				String date = message.substring(1, 9);
 				String timeHour = message.substring(9, 11);
-				String timeMinutes = message.substring(11, 13); //do 15 so še sekunde
-				String sender = message.substring(15, 32).trim().strip();
-				String recipient = message.substring(32, 49).trim().strip(); // v resnici ne rabimo ker smo recipient mi
+				String timeMinute = message.substring(11, 13);
+				String sender = message.substring(15, 32).trim();
 				String payload = message.substring(49);
 
-				String base = String.format("[%s] [%s:%s] ", sender, timeHour, timeMinutes);
-				if(type == 1) {
-					ChatClient.hasValidUsername = true;
-					String response = base + payload;
-					System.out.println(response);
-				} else if (type == 2) {
-					String response = "[RKchat] " + base + payload;
-					System.out.println(response);
-				} else if (type == 3) {
-					String response = "[direct message] " + base + payload;
-					System.out.println(response);
-				} else if (type == 4) {
-					// niso vsi type4 errorji enaki
-					// user not found, username already exists
-					if(payload.contains("USER_EXISTS")) {
-						ChatClient.hasValidUsername = false;
-					}
-
-					String response = base + payload;
-					System.out.println(response);
+				String base = String.format("[%s] [%s:%s] ", sender, timeHour, timeMinute);
+				switch (type) {
+					case 1: System.out.println(base + payload); break;
+					case 2: System.out.println("[RKchat] " + base + payload); break;
+					case 3: System.out.println("[direct message] " + base + payload); break;
+					case 4: System.out.println(base + payload); break;
 				}
-
 			}
 		} catch (Exception e) {
 			System.err.println("[system] could not read message");
