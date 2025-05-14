@@ -1,63 +1,68 @@
+import javax.net.ssl.*;
 import java.io.*;
-import java.net.*;
+import java.security.KeyStore;
+import java.security.SecureRandom;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 public class ChatServer {
 	protected int serverPort = 1234;
-	protected List<Socket> clients = new ArrayList<>(); // list of clients
-	protected Map<String, Integer> username2socketPort = new HashMap<>();
+	protected final List<SSLSocket> clients = new ArrayList<>();
+	protected final Map<String, Integer> username2socketPort = new HashMap<>();
 
 	public static void main(String[] args) throws Exception {
-		new ChatServer();
+		new ChatServer().start();
 	}
 
-	public ChatServer() {
-		ServerSocket serverSocket = null;
+	public void start() throws Exception {
+		// nalozi keystore in truststore
+		String ksPath = System.getProperty("javax.net.ssl.keyStore");
+		String ksPass = System.getProperty("javax.net.ssl.keyStorePassword");
+		String tsPath = System.getProperty("javax.net.ssl.trustStore");
+		String tsPass = System.getProperty("javax.net.ssl.trustStorePassword");
 
-		// create socket
-		try {
-			serverSocket = new ServerSocket(this.serverPort); // create the ServerSocket
-		} catch (Exception e) {
-			System.err.println("[system] could not create socket on port " + this.serverPort);
-			e.printStackTrace(System.err);
-			System.exit(1);
+		KeyStore serverKeyStore = KeyStore.getInstance("JKS");
+		try (FileInputStream fis = new FileInputStream(ksPath)) {
+			serverKeyStore.load(fis, ksPass.toCharArray());
 		}
+		KeyManagerFactory kmf = KeyManagerFactory.getInstance("SunX509");
+		kmf.init(serverKeyStore, ksPass.toCharArray());
 
-		// start listening for new connections
-		System.out.println("[system] listening ...");
-		try {
-			while (true) {
-				Socket newClientSocket = serverSocket.accept(); // wait for a new client connection
-				synchronized(this) {
-					clients.add(newClientSocket); // add client to the list of clients
-				}
-				ChatServerConnector conn = new ChatServerConnector(this, newClientSocket); // create a new thread for communication with the new client
-				conn.start(); // run the new thread
+		KeyStore trustStore = KeyStore.getInstance("JKS");
+		try (FileInputStream fis = new FileInputStream(tsPath)) {
+			trustStore.load(fis, tsPass.toCharArray());
+		}
+		TrustManagerFactory tmf = TrustManagerFactory.getInstance("SunX509");
+		tmf.init(trustStore);
+
+		// TLSv1.2
+		SSLContext sslContext = SSLContext.getInstance("TLSv1.2");
+		sslContext.init(kmf.getKeyManagers(), tmf.getTrustManagers(), new SecureRandom());
+
+		// create server socket
+		SSLServerSocketFactory factory = sslContext.getServerSocketFactory();
+		SSLServerSocket serverSocket = (SSLServerSocket) factory.createServerSocket(serverPort);
+		serverSocket.setNeedClientAuth(true);
+		serverSocket.setEnabledCipherSuites(new String[]{"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"});
+
+		System.out.println("[system] listening for TLS connections ...");
+		while (true) {
+			SSLSocket clientSocket = (SSLSocket) serverSocket.accept();
+			synchronized (this) {
+				clients.add(clientSocket);
 			}
-		} catch (Exception e) {
-			System.err.println("[error] Accept failed.");
-			e.printStackTrace(System.err);
-			System.exit(1);
-		}
-
-		// close socket
-		System.out.println("[system] closing server socket ...");
-		try {
-			serverSocket.close();
-		} catch (IOException e) {
-			e.printStackTrace(System.err);
-			System.exit(1);
+			new ChatServerConnector(this, clientSocket).start();
 		}
 	}
 
-	// send a message to all clients connected to the server
-	public void sendToAllClients(String message) throws Exception {
-		Iterator<Socket> i = clients.iterator();
-		while (i.hasNext()) { // iterate through the client list
-			Socket socket = (Socket) i.next(); // get the socket for communicating with this client
+	// send message to all clients
+	public void sendToAllClients(String message) {
+		for (SSLSocket socket : clients) {
 			try {
-				DataOutputStream out = new DataOutputStream(socket.getOutputStream()); // create output stream for sending messages to the client
-				out.writeUTF(message); // send message to the client
+				DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+				out.writeUTF(message);
+				out.flush();
 			} catch (Exception e) {
 				System.err.println("[system] could not send message to a client");
 				e.printStackTrace(System.err);
@@ -65,24 +70,28 @@ public class ChatServer {
 		}
 	}
 
-	public void sendToSpecificClient(String message, String sender, String recipient) throws Exception {
+	// send message to specific client
+	public void sendToSpecificClient(String message, String recipient) {
 		Integer port = getPortByUsername(recipient);
 		if (port != null) {
-			for (Socket socket : clients) {
+			for (SSLSocket socket : clients) {
 				if (socket.getPort() == port) {
 					try {
 						DataOutputStream out = new DataOutputStream(socket.getOutputStream());
 						out.writeUTF(message);
+						out.flush();
 					} catch (Exception e) {
 						System.err.println("[system] could not send message to a client");
+						e.printStackTrace(System.err);
 					}
+					break;
 				}
 			}
 		}
 	}
 
-	public void removeClient(Socket socket) {
-		synchronized(this) {
+	public void removeClient(SSLSocket socket) {
+		synchronized (this) {
 			clients.remove(socket);
 		}
 	}
@@ -95,87 +104,70 @@ public class ChatServer {
 		return username2socketPort.get(username);
 	}
 
-	public synchronized  String getUsernameByPort(Integer port) {
-		for(Map.Entry<String, Integer> entry : username2socketPort.entrySet()) {
-			if(entry.getValue().equals(port)) {
-				return entry.getKey();
-			}
-		}
-		return "";
-	}
-}
+	private static class ChatServerConnector extends Thread {
+		private final ChatServer server;
+		private final SSLSocket socket;
+		private String clientName;
 
-class ChatServerConnector extends Thread {
-	private ChatServer server;
-	private Socket socket;
-
-	public ChatServerConnector(ChatServer server, Socket socket) {
-		this.server = server;
-		this.socket = socket;
-	}
-
-	public void run() {
-		System.out.println("[system] connected with " + this.socket.getInetAddress().getHostName() + ":" + this.socket.getPort());
-
-		DataInputStream in;
-		try {
-			in = new DataInputStream(this.socket.getInputStream()); // create input stream for listening for incoming messages
-		} catch (IOException e) {
-			System.err.println("[system] could not open input stream!");
-			e.printStackTrace(System.err);
-			this.server.removeClient(socket);
-			return;
+		ChatServerConnector(ChatServer server, SSLSocket socket) {
+			this.server = server;
+			this.socket = socket;
 		}
 
-		while (true) { // infinite loop in which this thread waits for incoming messages and processes them
+		public void run() {
 			try {
-				String msg_received = in.readUTF();
-
-				System.out.println("[system RKchat] " + msg_received);
-
-				int type = Integer.parseInt(msg_received.substring(0, 1));
-				String date = msg_received.substring(1, 9);
-				String time = msg_received.substring(9, 15);
-				String sender = msg_received.substring(15, 32).trim();
-				String recipient = msg_received.substring(32, 49).trim();
-				String payload = msg_received.substring(49);
-
-				if (type == 1) {
-					if (server.getPortByUsername(sender) == null) {
-						server.registerUsername(sender, socket.getPort());
-						String response = "1" + date + time + String.format("%-17s", "system") + String.format("%-17s", sender) + "You are now logged in as @ " + sender;
-						server.sendToSpecificClient(response, "server", sender);
-					} else {
-						String response = "4" + date + time + String.format("%-17s", "system") + String.format("%-17s", sender) + "Username already exists! [USER_EXISTS]";
-						DataOutputStream out = new DataOutputStream(socket.getOutputStream());
-						out.writeUTF(response);
+				socket.startHandshake();
+				SSLSession session = socket.getSession();
+				String dn = session.getPeerPrincipal().getName();
+				for (String part : dn.split(",")) {
+					if (part.trim().startsWith("CN=")) {
+						clientName = part.trim().substring(3);
+						break;
 					}
-				} else if (type == 2) {
-					String message = "2" + date + time + String.format("%-17s", sender) + String.format("%-17s", "") + payload;
-					server.sendToAllClients(message);
-				} else if (type == 3) {
-					if (server.getPortByUsername(recipient) != null) {
-						String message = "3" + date + time + String.format("%-17s", sender) + String.format("%-17s", recipient) + payload;
-						server.sendToSpecificClient(message, sender, recipient);
-					} else {
-						String errorMsg = "4" + date + time + String.format("%-17s", "system") + String.format("%-17s", sender) + "User @" + recipient + " does not exist! [USER_NOT_FOUND]";
-						server.sendToSpecificClient(errorMsg, "server", sender);
+				}
+				server.registerUsername(clientName, socket.getPort());
+
+				DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+				LocalDateTime now = LocalDateTime.now();
+				String date = now.format(DateTimeFormatter.ofPattern("ddMMyyyy"));
+				String time = now.format(DateTimeFormatter.ofPattern("HHmmss"));
+				String response = "1" + date + time + String.format("%-17s", "system") +String.format("%-17s", clientName) + "You are now connected as @" + clientName;
+				out.writeUTF(response);
+				out.flush();
+
+				DataInputStream in = new DataInputStream(socket.getInputStream());
+				String msg;
+				while ((msg = in.readUTF()) != null) {
+					int type = Integer.parseInt(msg.substring(0, 1));
+					String dateField = msg.substring(1, 9);
+					String timeField = msg.substring(9, 15);
+					String recipient = msg.substring(32, 49).trim();
+					String payload = msg.substring(49);
+
+					System.out.println(msg);
+					if (type == 2) {
+						String broadcast = "2" + dateField + timeField + String.format("%-17s", clientName) + String.format("%-17s", "") + payload;
+						server.sendToAllClients(broadcast);
+					} else if (type == 3) {
+						if (server.getPortByUsername(recipient) != null) {
+							String direct = "3" + dateField + timeField + String.format("%-17s", clientName) + String.format("%-17s", recipient) + payload;
+							server.sendToSpecificClient(direct, recipient);
+						} else {
+							String err = "4" + dateField + timeField + String.format("%-17s", "system") + String.format("%-17s", clientName) + "User @" + recipient + " does not exist!";
+							out.writeUTF(err);
+							out.flush();
+						}
 					}
 				}
 			} catch (Exception e) {
-				System.err.println("[system] there was a problem while sending the message to all clients");
+				System.err.println("[system] connection with " + clientName + " closed due to error");
 				e.printStackTrace(System.err);
-				try {
-					socket.close();
-				} catch (IOException ex) {
-					ex.printStackTrace(System.err);
+			} finally {
+				server.removeClient(socket);
+				if (clientName != null) {
+					server.username2socketPort.remove(clientName);
 				}
-
-				this.server.removeClient(socket);
-				// da se iz mapa odstrani username in port
-				// drugace ce se npr loginamo notri, ugasnemo chatclient in se spet loginamo z istim imenom nas ne spusti notri ker ni entry izbrisan
-				this.server.username2socketPort.remove(this.server.getUsernameByPort(socket.getPort()));
-				break;
+				try { socket.close(); } catch (IOException ignored) {}
 			}
 		}
 	}

@@ -1,6 +1,6 @@
 *.class
 *.iml
 .idea
-*.crt
-*.jks
-*.zip
+.crt
+.jks
+.zip
